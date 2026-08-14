@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>レシート管理 & 出費ダッシュボード</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bulma@0.9.4/css/bulma.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    .drop-zone {
+      border: 2px dashed #00d1b2;
+      border-radius: 8px;
+      padding: 30px;
+      text-align: center;
+      cursor: pointer;
+      background-color: #f9fbfb;
+      transition: background-color 0.2s;
+    }
+    .drop-zone:hover { background-color: #f0fdfa; }
+  </style>
+</head>
+<body class="has-background-light" style="min-height: 100vh;">
+
+  <nav class="navbar is-primary">
+    <div class="navbar-brand">
+      <span class="navbar-item is-size-4 has-text-weight-bold">🧾 レシート管理アプリ</span>
+    </div>
+  </nav>
+
+  <div class="container py-5 px-3">
+    <div class="columns">
+      
+      <!-- 左側: アップロード & 解析結果 -->
+      <div class="column is-5">
+        <div class="box">
+          <h2 class="title is-5">📷 レシート画像の読み取り</h2>
+          
+          <div id="dropZone" class="drop-zone mb-3">
+            <p class="has-text-grey">ここに画像をドラッグ＆ドロップ<br>またはクリックして選択</p>
+            <input type="file" id="fileInput" accept="image/*" style="display: none;">
+          </div>
+          
+          <button id="uploadBtn" class="button is-primary is-fullwidth" disabled>画像を解析して保存</button>
+          <div id="loading" class="has-text-centered my-3" style="display: none;">
+            <p class="has-text-info">Geminiが解析中...</p>
+          </div>
+        </div>
+
+        <!-- 最新の解析結果表示 -->
+        <div id="resultBox" class="box" style="display: none;">
+          <h3 class="title is-6">解析結果</h3>
+          <p><strong>店舗名:</strong> <span id="resStore">-</span></p>
+          <p><strong>合計:</strong> <span id="resTotal" class="has-text-danger is-size-5">0</span> 円</p>
+          <hr>
+          <table class="table is-fullwidth is-striped is-narrow">
+            <thead>
+              <tr><th>品目</th><th>価格</th><th>カテゴリ</th></tr>
+            </thead>
+            <tbody id="resItems"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- 右側: 集計グラフ & 履歴 -->
+      <div class="column is-7">
+        <div class="box mb-5">
+          <h2 class="title is-5">📊 出費集計（カテゴリ別）</h2>
+          <canvas id="categoryChart" style="max-height: 250px;"></canvas>
+        </div>
+
+        <div class="box">
+          <h2 class="title is-5">📜 最近のレシート履歴</h2>
+          <div style="max-height: 300px; overflow-y: auto;">
+            <table class="table is-fullwidth is-hoverable">
+              <thead>
+                <tr><th>日時</th><th>店舗名</th><th>合計金額</th></tr>
+              </thead>
+              <tbody id="historyTable"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <script>
+    const fileInput = document.getElementById('fileInput');
+    const dropZone = document.getElementById('dropZone');
+    const uploadBtn = document.getElementById('uploadBtn');
+    let selectedFile = null;
+    let chartInstance = null;
+
+    // ファイル選択イベント
+    dropZone.addEventListener('click', () => fileInput.click());
+    fileInput.addEventListener('change', (e) => handleFile(e.target.files[0]));
+    
+    dropZone.addEventListener('dragover', (e) => { e.preventDefault(); });
+    dropZone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
+    });
+
+    function handleFile(file) {
+      if (!file.type.startsWith('image/')) return alert('画像ファイルを選択してください');
+      selectedFile = file;
+      dropZone.querySelector('p').innerHTML = `選択中: <strong>${file.name}</strong>`;
+      uploadBtn.disabled = false;
+    }
+
+    // 解析API呼び出し
+    uploadBtn.addEventListener('click', async () => {
+      if (!selectedFile) return;
+      
+      const formData = new FormData();
+      formData.append('file', selectedFile);
+
+      document.getElementById('loading').style.display = 'block';
+      uploadBtn.disabled = true;
+
+      try {
+        const res = await fetch('/analyze-receipt', { method: 'POST', body: formData });
+        const json = await res.json();
+
+        if (json.status === 'success') {
+          showResult(json.data);
+          loadAnalytics();
+          loadHistory();
+        } else {
+          alert('解析に失敗しました');
+        }
+      } catch (err) {
+        alert('エラーが発生しました: ' + err.message);
+      } finally {
+        document.getElementById('loading').style.display = 'none';
+        uploadBtn.disabled = false;
+      }
+    });
+
+    function showResult(data) {
+      document.getElementById('resStore').textContent = data.store_name;
+      document.getElementById('resTotal').textContent = data.total.toLocaleString();
+      
+      const tbody = document.getElementById('resItems');
+      tbody.innerHTML = '';
+      data.items.forEach(item => {
+        tbody.innerHTML += `<tr><td>${item.name}</td><td>${item.price}円</td><td><span class="tag is-info is-light">${item.category}</span></td></tr>`;
+      });
+      document.getElementById('resultBox').style.display = 'block';
+    }
+
+    // 集計データの読み込み＆グラフ描画
+    async function loadAnalytics() {
+      const res = await fetch('/analytics');
+      const data = await res.json();
+
+      const labels = data.by_category.map(c => c.category);
+      const totals = data.by_category.map(c => c.total);
+
+      const ctx = document.getElementById('categoryChart').getContext('2d');
+      if (chartInstance) chartInstance.destroy();
+
+      chartInstance = new Chart(ctx, {
+        type: 'doughnut',
+        data: {
+          labels: labels,
+          datasets: [{
+            data: totals,
+            backgroundColor: ['#ff6384', '#36a2eb', '#cc65fe', '#ffce56', '#4bc0c0', '#9966ff']
+          }]
+        }
+      });
+    }
+
+    // 履歴取得
+    async function loadHistory() {
+      const res = await fetch('/receipts');
+      const data = await res.json();
+      const tbody = document.getElementById('historyTable');
+      tbody.innerHTML = '';
+
+      data.receipts.forEach(r => {
+        tbody.innerHTML += `<tr><td>${r.created_at.split(' ')[0]}</td><td>${r.store_name || '不明'}</td><td>${r.total.toLocaleString()}円</td></tr>`;
+      });
+    }
+
+    // 初期ロード
+    loadAnalytics();
+    loadHistory();
+  </script>
+</body>
+</html>

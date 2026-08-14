@@ -5,6 +5,7 @@ from fastapi import FastAPI, File, UploadFile, HTTPException
 from google import genai
 from google.genai import types
 from pydantic import BaseModel, Field
+from fastapi.responses import FileResponse
 
 # .env から環境変数を読み込み
 load_dotenv()
@@ -183,3 +184,7 @@ def get_analytics():
         "monthly": monthly_summary,
         "by_category": category_summary
     }
+# トップページ（HTML配信）
+@app.get("/")
+def read_index():
+    return FileResponse("index.html")
