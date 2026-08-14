@@ -5,7 +5,7 @@ Gemini API (LLM) を活用し、レシート画像から「店舗名・品目・
 ---
 
 ## 🌐 動作デモ・URL
-- **公開URL**: https://（Renderで発行されたURLを貼る）
+- **公開URL**: https://receipt-manager-api-4j20.onrender.com
 
 ---
 
