@@ -46,9 +46,8 @@
           </div>
         </div>
 
-        <!-- 最新の解析結果表示 -->
         <div id="resultBox" class="box" style="display: none;">
-          <h3 class="title is-6">解析結果</h3>
+          <h3 class="title is-6">直前の解析結果</h3>
           <p><strong>店舗名:</strong> <span id="resStore">-</span></p>
           <p><strong>合計:</strong> <span id="resTotal" class="has-text-danger is-size-5">0</span> 円</p>
           <hr>
@@ -64,7 +63,36 @@
       <!-- 右側: 集計グラフ & 履歴 -->
       <div class="column is-7">
         <div class="box mb-5">
-          <h2 class="title is-5">📊 出費集計（カテゴリ別）</h2>
+          <div class="is-flex is-justify-content-space-between is-align-items-center mb-3">
+            <h2 class="title is-5 mb-0">📊 出費集計</h2>
+            
+            <!-- 期間フィルター -->
+            <div class="field is-grouped mb-0">
+              <div class="control">
+                <div class="select is-small">
+                  <select id="periodTypeSelect" onchange="onPeriodTypeChange()">
+                    <option value="all">全期間</option>
+                    <option value="year">年で指定</option>
+                    <option value="month">月で指定</option>
+                    <option value="week">週で指定（日付選択）</option>
+                  </select>
+                </div>
+              </div>
+              
+              <!-- ドロップダウン用コンテナ -->
+              <div class="control" id="detailValueControl" style="display: none;">
+                <div class="select is-small">
+                  <select id="detailValueSelect" onchange="loadAnalytics()"></select>
+                </div>
+              </div>
+
+              <!-- カレンダー用コンテナ（週指定用） -->
+              <div class="control" id="datePickerControl" style="display: none;">
+                <input class="input is-small" type="date" id="weekDatePicker" onchange="loadAnalytics()">
+              </div>
+            </div>
+          </div>
+
           <canvas id="categoryChart" style="max-height: 250px;"></canvas>
         </div>
 
@@ -73,7 +101,7 @@
           <div style="max-height: 300px; overflow-y: auto;">
             <table class="table is-fullwidth is-hoverable">
               <thead>
-                <tr><th>日時</th><th>店舗名</th><th>合計金額</th></tr>
+                <tr><th>日時</th><th>店舗名</th><th>合計金額</th><th>操作</th></tr>
               </thead>
               <tbody id="historyTable"></tbody>
             </table>
@@ -91,10 +119,14 @@
     let selectedFile = null;
     let chartInstance = null;
 
-    // ファイル選択イベント
+    let availableYears = [];
+    let availableMonths = [];
+
+    // 初期値として今日の日付を設定 (YYYY-MM-DD)
+    document.getElementById('weekDatePicker').value = new Date().toISOString().split('T')[0];
+
     dropZone.addEventListener('click', () => fileInput.click());
     fileInput.addEventListener('change', (e) => handleFile(e.target.files[0]));
-    
     dropZone.addEventListener('dragover', (e) => { e.preventDefault(); });
     dropZone.addEventListener('drop', (e) => {
       e.preventDefault();
@@ -108,10 +140,8 @@
       uploadBtn.disabled = false;
     }
 
-    // 解析API呼び出し
     uploadBtn.addEventListener('click', async () => {
       if (!selectedFile) return;
-      
       const formData = new FormData();
       formData.append('file', selectedFile);
 
@@ -140,7 +170,6 @@
     function showResult(data) {
       document.getElementById('resStore').textContent = data.store_name;
       document.getElementById('resTotal').textContent = data.total.toLocaleString();
-      
       const tbody = document.getElementById('resItems');
       tbody.innerHTML = '';
       data.items.forEach(item => {
@@ -149,10 +178,50 @@
       document.getElementById('resultBox').style.display = 'block';
     }
 
+    // 期間指定タイプ切替
+    function onPeriodTypeChange() {
+      const type = document.getElementById('periodTypeSelect').value;
+      const detailControl = document.getElementById('detailValueControl');
+      const datePickerControl = document.getElementById('datePickerControl');
+      const detailSelect = document.getElementById('detailValueSelect');
+
+      detailSelect.innerHTML = '';
+      detailControl.style.display = 'none';
+      datePickerControl.style.display = 'none';
+
+      if (type === 'year') {
+        detailControl.style.display = 'inline-block';
+        availableYears.forEach(y => {
+          detailSelect.innerHTML += `<option value="${y}">${y}年</option>`;
+        });
+      } else if (type === 'month') {
+        detailControl.style.display = 'inline-block';
+        availableMonths.forEach(m => {
+          const [y, month] = m.split('-');
+          detailSelect.innerHTML += `<option value="${m}">${y}年${parseInt(month)}月</option>`;
+        });
+      } else if (type === 'week') {
+        datePickerControl.style.display = 'inline-block';
+      }
+      loadAnalytics();
+    }
+
     // 集計データの読み込み＆グラフ描画
     async function loadAnalytics() {
-      const res = await fetch('/analytics');
+      const type = document.getElementById('periodTypeSelect').value;
+      let value = '';
+
+      if (type === 'year' || type === 'month') {
+        value = document.getElementById('detailValueSelect').value || '';
+      } else if (type === 'week') {
+        value = document.getElementById('weekDatePicker').value || '';
+      }
+
+      const res = await fetch(`/analytics?period_type=${type}&value=${value}`);
       const data = await res.json();
+
+      availableYears = data.available_years || [];
+      availableMonths = data.available_months || [];
 
       const labels = data.by_category.map(c => c.category);
       const totals = data.by_category.map(c => c.total);
@@ -172,7 +241,7 @@
       });
     }
 
-    // 履歴取得
+    // 履歴取得 ＆ 削除機能
     async function loadHistory() {
       const res = await fetch('/receipts');
       const data = await res.json();
@@ -180,11 +249,33 @@
       tbody.innerHTML = '';
 
       data.receipts.forEach(r => {
-        tbody.innerHTML += `<tr><td>${r.created_at.split(' ')[0]}</td><td>${r.store_name || '不明'}</td><td>${r.total.toLocaleString()}円</td></tr>`;
+        tbody.innerHTML += `
+          <tr>
+            <td>${r.created_at.split(' ')[0]}</td>
+            <td>${r.store_name || '不明'}</td>
+            <td>${r.total.toLocaleString()}円</td>
+            <td>
+              <button class="button is-danger is-small is-outlined" onclick="deleteReceipt(${r.id})">削除</button>
+            </td>
+          </tr>
+        `;
       });
     }
 
-    // 初期ロード
+    async function deleteReceipt(id) {
+      if (!confirm('このレシートデータを削除してもよろしいですか？')) return;
+
+      const res = await fetch(`/receipts/${id}`, { method: 'DELETE' });
+      const json = await res.json();
+
+      if (json.status === 'success') {
+        loadAnalytics();
+        loadHistory();
+      } else {
+        alert('削除に失敗しました');
+      }
+    }
+
     loadAnalytics();
     loadHistory();
   </script>
