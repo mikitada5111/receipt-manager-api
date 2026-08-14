@@ -10,13 +10,18 @@
     .drop-zone {
       border: 2px dashed #00d1b2;
       border-radius: 8px;
-      padding: 30px;
+      padding: 25px;
       text-align: center;
       cursor: pointer;
       background-color: #f9fbfb;
       transition: background-color 0.2s;
     }
     .drop-zone:hover { background-color: #f0fdfa; }
+    #cameraVideo {
+      width: 100%;
+      border-radius: 8px;
+      background-color: #000;
+    }
   </style>
 </head>
 <body class="has-background-light" style="min-height: 100vh;">
@@ -30,17 +35,26 @@
   <div class="container py-5 px-3">
     <div class="columns">
       
-      <!-- 左側: アップロード & 解析結果 -->
+      <!-- 左側: アップロード / カメラ撮影 & 解析結果 -->
       <div class="column is-5">
         <div class="box">
-          <h2 class="title is-5">📷 レシート画像の読み取り</h2>
+          <h2 class="title is-5">📷 レシートの追加</h2>
           
           <div id="dropZone" class="drop-zone mb-3">
             <p class="has-text-grey">ここに画像をドラッグ＆ドロップ<br>またはクリックして選択</p>
             <input type="file" id="fileInput" accept="image/*" style="display: none;">
           </div>
+
+          <div class="field is-grouped mb-3">
+            <div class="control is-expanded">
+              <button id="openCameraBtn" class="button is-info is-outlined is-fullwidth">
+                📷 その場でカメラ撮影
+              </button>
+            </div>
+          </div>
           
           <button id="uploadBtn" class="button is-primary is-fullwidth" disabled>画像を解析して保存</button>
+          
           <div id="loading" class="has-text-centered my-3" style="display: none;">
             <p class="has-text-info">Geminiが解析中...</p>
           </div>
@@ -60,7 +74,7 @@
         </div>
       </div>
 
-      <!-- 右側: 集計グラフ & 履歴 -->
+      <!-- 右側: 集計グラフ & 内訳詳細 & 履歴 -->
       <div class="column is-7">
         <div class="box mb-5">
           <div class="is-flex is-justify-content-space-between is-align-items-center mb-3">
@@ -93,12 +107,34 @@
             </div>
           </div>
 
-          <canvas id="categoryChart" style="max-height: 250px;"></canvas>
+          <!-- 選択期間の合計金額表示 -->
+          <div class="notification is-primary is-light py-2 px-4 mb-3">
+            <p class="is-size-6">
+              選択期間の合計金額: <strong class="is-size-4 has-text-danger" id="periodTotalAmount">0</strong> 円
+            </p>
+          </div>
+
+          <!-- グラフ -->
+          <canvas id="categoryChart" style="max-height: 200px;"></canvas>
+
+          <!-- カテゴリごとの詳細テーブル -->
+          <hr class="my-3">
+          <h3 class="title is-6 mb-2">カテゴリ別内訳一覧</h3>
+          <table class="table is-fullwidth is-striped is-narrow">
+            <thead>
+              <tr>
+                <th>カテゴリ</th>
+                <th class="has-text-right">金額</th>
+                <th class="has-text-right">割合</th>
+              </tr>
+            </thead>
+            <tbody id="categoryTableBody"></tbody>
+          </table>
         </div>
 
         <div class="box">
           <h2 class="title is-5">📜 最近のレシート履歴</h2>
-          <div style="max-height: 300px; overflow-y: auto;">
+          <div style="max-height: 250px; overflow-y: auto;">
             <table class="table is-fullwidth is-hoverable">
               <thead>
                 <tr><th>日時</th><th>店舗名</th><th>合計金額</th><th>操作</th></tr>
@@ -112,12 +148,32 @@
     </div>
   </div>
 
+  <!-- カメラ撮影用モーダルポップアップ -->
+  <div id="cameraModal" class="modal">
+    <div class="modal-background" onclick="closeCameraModal()"></div>
+    <div class="modal-card">
+      <header class="modal-card-head">
+        <p class="modal-card-title">📷 レシート撮影</p>
+        <button class="delete" aria-label="close" onclick="closeCameraModal()"></button>
+      </header>
+      <section class="modal-card-body">
+        <video id="cameraVideo" autoplay playsinline></video>
+        <canvas id="cameraCanvas" style="display: none;"></canvas>
+      </section>
+      <footer class="modal-card-foot is-justify-content-space-between">
+        <button class="button" onclick="closeCameraModal()">キャンセル</button>
+        <button class="button is-success" onclick="takeSnapshot()">📸 パシャ（撮影）</button>
+      </footer>
+    </div>
+  </div>
+
   <script>
     const fileInput = document.getElementById('fileInput');
     const dropZone = document.getElementById('dropZone');
     const uploadBtn = document.getElementById('uploadBtn');
     let selectedFile = null;
     let chartInstance = null;
+    let cameraStream = null;
 
     let availableYears = [];
     let availableMonths = [];
@@ -140,6 +196,47 @@
       uploadBtn.disabled = false;
     }
 
+    // --- カメラ起動関連処理 ---
+    const cameraModal = document.getElementById('cameraModal');
+    const cameraVideo = document.getElementById('cameraVideo');
+    const cameraCanvas = document.getElementById('cameraCanvas');
+
+    document.getElementById('openCameraBtn').addEventListener('click', async () => {
+      try {
+        // スマホなどの背面カメラを優先起動（無ければインカメラ/Webカメラ）
+        cameraStream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { ideal: "environment" } },
+          audio: false
+        });
+        cameraVideo.srcObject = cameraStream;
+        cameraModal.classList.add('is-active');
+      } catch (err) {
+        alert('カメラの起動に失敗しました。アクセスを許可してください。\n' + err.message);
+      }
+    });
+
+    function closeCameraModal() {
+      if (cameraStream) {
+        cameraStream.getTracks().forEach(track => track.stop());
+      }
+      cameraModal.classList.remove('is-active');
+    }
+
+    function takeSnapshot() {
+      const context = cameraCanvas.getContext('2d');
+      cameraCanvas.width = cameraVideo.videoWidth;
+      cameraCanvas.height = cameraVideo.videoHeight;
+      context.drawImage(cameraVideo, 0, 0, cameraCanvas.width, cameraCanvas.height);
+
+      // Canvas から Blob (Fileオブジェクト化) を作成
+      cameraCanvas.toBlob((blob) => {
+        const file = new File([blob], `photo_${Date.now()}.jpg`, { type: 'image/jpeg' });
+        handleFile(file);
+        closeCameraModal();
+      }, 'image/jpeg', 0.9);
+    }
+
+    // --- 解析 & 送信処理 ---
     uploadBtn.addEventListener('click', async () => {
       if (!selectedFile) return;
       const formData = new FormData();
@@ -173,7 +270,7 @@
       const tbody = document.getElementById('resItems');
       tbody.innerHTML = '';
       data.items.forEach(item => {
-        tbody.innerHTML += `<tr><td>${item.name}</td><td>${item.price}円</td><td><span class="tag is-info is-light">${item.category}</span></td></tr>`;
+        tbody.innerHTML += `<tr><td>${item.name}</td><td>${item.price.toLocaleString()}円</td><td><span class="tag is-info is-light">${item.category}</span></td></tr>`;
       });
       document.getElementById('resultBox').style.display = 'block';
     }
@@ -223,6 +320,30 @@
       availableYears = data.available_years || [];
       availableMonths = data.available_months || [];
 
+      // 1. 合計金額の計算
+      const totalSum = data.by_category.reduce((sum, item) => sum + item.total, 0);
+      document.getElementById('periodTotalAmount').textContent = totalSum.toLocaleString();
+
+      // 2. カテゴリ別内訳表の更新
+      const tableBody = document.getElementById('categoryTableBody');
+      tableBody.innerHTML = '';
+
+      if (data.by_category.length === 0) {
+        tableBody.innerHTML = '<tr><td colspan="3" class="has-text-centered has-text-grey">この期間のデータはありません</td></tr>';
+      } else {
+        data.by_category.forEach(c => {
+          const percentage = totalSum > 0 ? ((c.total / totalSum) * 100).toFixed(1) : 0;
+          tableBody.innerHTML += `
+            <tr>
+              <td><strong>${c.category}</strong></td>
+              <td class="has-text-right">${c.total.toLocaleString()} 円</td>
+              <td class="has-text-right has-text-grey">${percentage} %</td>
+            </tr>
+          `;
+        });
+      }
+
+      // 3. 円グラフの更新
       const labels = data.by_category.map(c => c.category);
       const totals = data.by_category.map(c => c.total);
 
