@@ -1,167 +1,212 @@
 import os
+import json
 import sqlite3
-from dotenv import load_dotenv
+from datetime import datetime
+from typing import List, Optional
 from fastapi import FastAPI, File, UploadFile, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 from google import genai
 from google.genai import types
-from pydantic import BaseModel, Field
-
-load_dotenv()
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-
-if not GEMINI_API_KEY:
-    raise ValueError("GEMINI_API_KEY が設定されていません。")
 
 app = FastAPI()
-client = genai.Client(api_key=GEMINI_API_KEY)
-DB_PATH = "receipts.db"
+
+# --- データベース初期化 ---
+DB_NAME = "receipts.db"
 
 def init_db():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    cursor.execute("""
+    # receipt_date カラムが存在しない場合はテーブル作成時に追加
+    cursor.execute('''
         CREATE TABLE IF NOT EXISTS receipts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             store_name TEXT,
-            total_amount INTEGER,
+            total INTEGER,
+            receipt_date TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
-    """)
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS receipt_items (
+    ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS items (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             receipt_id INTEGER,
             name TEXT,
             price INTEGER,
             category TEXT,
-            FOREIGN KEY (receipt_id) REFERENCES receipts (id) ON DELETE CASCADE
+            FOREIGN KEY (receipt_id) REFERENCES receipts(id) ON DELETE CASCADE
         )
-    """)
+    ''')
+    
+    # 既存DBの場合、receipt_date カラムが無ければ追加するマイグレーション処理
+    cursor.execute("PRAGMA table_info(receipts)")
+    columns = [column[1] for column in cursor.fetchall()]
+    if 'receipt_date' not in columns:
+        cursor.execute("ALTER TABLE receipts ADD COLUMN receipt_date TEXT")
+        # 既存データの receipt_date を created_at の日付で更新
+        cursor.execute("UPDATE receipts SET receipt_date = DATE(created_at) WHERE receipt_date IS NULL")
+
     conn.commit()
     conn.close()
 
 init_db()
 
-class Item(BaseModel):
-    name: str = Field(description="商品名")
-    price: int = Field(description="価格（数値のみ）")
-    category: str = Field(description="カテゴリ（食費, 日用品, 衣服, 交通費, 趣味・娯楽, その他 のいずれか）")
+# --- Pydantic スキーマ定義 ---
+class ItemSchema(BaseModel):
+    name: str
+    price: int
+    category: str
 
-class ReceiptData(BaseModel):
-    store_name: str = Field(description="店舗名", default="")
-    items: list[Item] = Field(description="購入商品のリスト")
-    total: int = Field(description="合計金額（数値のみ）", default=0)
+class ReceiptAnalysisSchema(BaseModel):
+    store_name: Optional[str] = "不明"
+    total: int
+    receipt_date: Optional[str] = None  # レシートに記載されている日付 (YYYY-MM-DD)
+    items: List[ItemSchema]
 
-@app.get("/")
-def read_index():
-    return FileResponse("index.html")
+# --- Gemini API 設定 ---
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
+@app.get("/", response_class=HTMLResponse)
+async def read_index():
+    with open("index.html", "r", encoding="utf-8") as f:
+        return f.read()
 
 @app.post("/analyze-receipt")
 async def analyze_receipt(file: UploadFile = File(...)):
-    if not file.content_type.startswith("image/"):
-        raise HTTPException(status_code=400, detail="画像ファイルをアップロードしてください。")
+    if not GEMINI_API_KEY:
+        raise HTTPException(status_code=500, detail="GEMINI_API_KEY is not set")
+
+    contents = await file.read()
+    
+    client = genai.Client(api_key=GEMINI_API_KEY)
+
+    prompt = (
+        "レシートの画像を解析し、以下の情報を抽出してください。\n"
+        "1. 店舗名 (store_name)\n"
+        "2. 合計金額 (total)\n"
+        "3. レシートに記載されている購入日付 (receipt_date)。必ず 'YYYY-MM-DD' 形式（例: 2024-03-15）で抽出してください。西暦が書かれていない場合は、今年の西暦と推測してください。日付が読み取れない場合は null にしてください。\n"
+        "4. 各購入品目の名称 (name)、価格 (price)、および最も適したカテゴリ (category - 食費, 日用品, 交通費, 衣服, 美容・健康, 娯楽, その他 など)。"
+    )
 
     try:
-        contents = await file.read()
         response = client.models.generate_content(
-            model='gemini-flash-latest',
+            model='gemini-2.5-flash',
             contents=[
-                types.Part.from_bytes(data=contents, mime_type=file.content_type),
-                "レシート画像から店舗名、商品リスト、および合計金額を抽出し、各商品のカテゴリを推測して分類してください。"
+                types.Part.from_bytes(
+                    data=contents,
+                    mime_type=file.content_type or "image/jpeg",
+                ),
+                prompt
             ],
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
-                response_schema=ReceiptData,
-                temperature=0.0
-            )
+                response_schema=ReceiptAnalysisSchema,
+            ),
         )
-        receipt_info: ReceiptData = response.parsed
 
-        conn = sqlite3.connect(DB_PATH)
+        data = json.loads(response.text)
+        
+        # レシート日付の確定（解析できなかった場合は本日日付）
+        r_date = data.get("receipt_date")
+        if not r_date:
+            r_date = datetime.now().strftime("%Y-%m-%d")
+
+        # DBに保存
+        conn = sqlite3.connect(DB_NAME)
         cursor = conn.cursor()
-        cursor.execute("INSERT INTO receipts (store_name, total_amount) VALUES (?, ?)", (receipt_info.store_name, receipt_info.total))
+        
+        cursor.execute(
+            "INSERT INTO receipts (store_name, total, receipt_date) VALUES (?, ?, ?)",
+            (data.get("store_name", "不明"), data.get("total", 0), r_date)
+        )
         receipt_id = cursor.lastrowid
 
-        for item in receipt_info.items:
-            cursor.execute("INSERT INTO receipt_items (receipt_id, name, price, category) VALUES (?, ?, ?, ?)", (receipt_id, item.name, item.price, item.category))
+        for item in data.get("items", []):
+            cursor.execute(
+                "INSERT INTO items (receipt_id, name, price, category) VALUES (?, ?, ?, ?)",
+                (receipt_id, item.get("name"), item.get("price"), item.get("category"))
+            )
 
         conn.commit()
         conn.close()
-        return {"status": "success", "receipt_id": receipt_id, "data": receipt_info}
+
+        data["receipt_date"] = r_date
+        return {"status": "success", "data": data}
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"解析エラー: {str(e)}")
+        print(f"Error during analysis: {e}")
+        return JSONResponse(status_code=500, content={"status": "error", "message": str(e)})
 
-@app.get("/receipts")
-def get_receipts():
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute("SELECT id, store_name, total_amount, created_at FROM receipts ORDER BY id DESC")
-    receipts = cursor.fetchall()
-    
-    result = []
-    for r in receipts:
-        r_id, store, total, created_at = r
-        cursor.execute("SELECT name, price, category FROM receipt_items WHERE receipt_id = ?", (r_id,))
-        items = [{"name": row[0], "price": row[1], "category": row[2]} for row in cursor.fetchall()]
-        result.append({"id": r_id, "store_name": store, "total": total, "created_at": created_at, "items": items})
-        
-    conn.close()
-    return {"receipts": result}
-
-@app.delete("/receipts/{receipt_id}")
-def delete_receipt(receipt_id: int):
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM receipt_items WHERE receipt_id = ?", (receipt_id,))
-    cursor.execute("DELETE FROM receipts WHERE id = ?", (receipt_id,))
-    conn.commit()
-    conn.close()
-    return {"status": "success", "deleted_id": receipt_id}
-
-# 📊 指定日が含まれる週（月曜〜日曜）を判定して集計するAPI
 @app.get("/analytics")
-def get_analytics(period_type: str = "all", value: str = ""):
-    conn = sqlite3.connect(DB_PATH)
+async def get_analytics(period_type: str = "all", value: str = ""):
+    conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
 
+    # 利用可能な年・月一覧を取得 (receipt_date 基準)
+    cursor.execute("SELECT DISTINCT strftime('%Y', receipt_date) FROM receipts WHERE receipt_date IS NOT NULL ORDER BY 1 DESC")
+    years = [r[0] for r in cursor.fetchall() if r[0]]
+
+    cursor.execute("SELECT DISTINCT strftime('%Y-%m', receipt_date) FROM receipts WHERE receipt_date IS NOT NULL ORDER BY 1 DESC")
+    months = [r[0] for r in cursor.fetchall() if r[0]]
+
+    # フィルタリング条件の構築
     where_clause = ""
     params = []
 
     if period_type == "year" and value:
-        where_clause = "WHERE STRFTIME('%Y', receipts.created_at) = ?"
+        where_clause = "WHERE strftime('%Y', r.receipt_date) = ?"
         params.append(value)
     elif period_type == "month" and value:
-        where_clause = "WHERE STRFTIME('%Y-%m', receipts.created_at) = ?"
+        where_clause = "WHERE strftime('%Y-%m', r.receipt_date) = ?"
         params.append(value)
     elif period_type == "week" and value:
-        # 指定日が含まれる週の「月曜日」と「日曜日」の範囲を算出
-        where_clause = """
-            WHERE DATE(receipts.created_at) >= DATE(?, 'weekday 0', '-6 days')
-              AND DATE(receipts.created_at) <= DATE(?, 'weekday 0')
-        """
+        where_clause = "WHERE r.receipt_date BETWEEN date(?, 'weekday 1', '-7 days') AND date(?, 'weekday 1', '-1 days')"
         params.extend([value, value])
 
-    query = f"""
-        SELECT receipt_items.category, SUM(receipt_items.price) AS total
-        FROM receipt_items
-        JOIN receipts ON receipts.id = receipt_items.receipt_id
+    query = f'''
+        SELECT i.category, SUM(i.price) as total
+        FROM items i
+        JOIN receipts r ON i.receipt_id = r.id
         {where_clause}
-        GROUP BY receipt_items.category
+        GROUP BY i.category
         ORDER BY total DESC
-    """
+    '''
     cursor.execute(query, params)
-    category_summary = [{"category": row[0] or "未分類", "total": row[1]} for row in cursor.fetchall()]
-
-    cursor.execute("SELECT DISTINCT STRFTIME('%Y', created_at) FROM receipts ORDER BY 1 DESC")
-    available_years = [row[0] for row in cursor.fetchall() if row[0]]
-
-    cursor.execute("SELECT DISTINCT STRFTIME('%Y-%m', created_at) FROM receipts ORDER BY 1 DESC")
-    available_months = [row[0] for row in cursor.fetchall() if row[0]]
+    category_data = [{"category": row[0], "total": row[1]} for row[1] in cursor.fetchall()]
 
     conn.close()
+
     return {
-        "by_category": category_summary,
-        "available_years": available_years,
-        "available_months": available_months
+        "by_category": category_data,
+        "available_years": years,
+        "available_months": months
     }
+
+@app.get("/receipts")
+async def get_receipts():
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    
+    # receipt_date を優先表示（無ければ created_at の日付）
+    cursor.execute("""
+        SELECT id, store_name, total, COALESCE(receipt_date, DATE(created_at)) as receipt_date 
+        FROM receipts 
+        ORDER BY receipt_date DESC, id DESC 
+        LIMIT 20
+    """)
+    receipts = [
+        {"id": row[0], "store_name": row[1], "total": row[2], "receipt_date": row[3]}
+        for row in cursor.fetchall()
+    ]
+    conn.close()
+    return {"receipts": receipts}
+
+@app.delete("/receipts/{receipt_id}")
+async def delete_receipt(receipt_id: int):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM receipts WHERE id = ?", (receipt_id,))
+    conn.commit()
+    conn.close()
+    return {"status": "success"}

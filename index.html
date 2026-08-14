@@ -265,15 +265,20 @@
     });
 
     function showResult(data) {
-      document.getElementById('resStore').textContent = data.store_name;
-      document.getElementById('resTotal').textContent = data.total.toLocaleString();
-      const tbody = document.getElementById('resItems');
-      tbody.innerHTML = '';
-      data.items.forEach(item => {
-        tbody.innerHTML += `<tr><td>${item.name}</td><td>${item.price.toLocaleString()}円</td><td><span class="tag is-info is-light">${item.category}</span></td></tr>`;
-      });
-      document.getElementById('resultBox').style.display = 'block';
-    }
+  document.getElementById('resStore').textContent = data.store_name;
+  document.getElementById('resTotal').textContent = data.total.toLocaleString();
+  
+  // レシート日付を表示に追加
+  const dateEl = document.getElementById('resDate');
+  if (dateEl) dateEl.textContent = data.receipt_date || '-';
+
+  const tbody = document.getElementById('resItems');
+  tbody.innerHTML = '';
+  data.items.forEach(item => {
+    tbody.innerHTML += `<tr><td>${item.name}</td><td>${item.price.toLocaleString()}円</td><td><span class="tag is-info is-light">${item.category}</span></td></tr>`;
+  });
+  document.getElementById('resultBox').style.display = 'block';
+}
 
     // 期間指定タイプ切替
     function onPeriodTypeChange() {
