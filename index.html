@@ -1,4 +1,3 @@
-PS C:\Users\新井幹太\Downloads\receipt-API> Get-Content index.html
 <!DOCTYPE html>
 <html lang="ja">
 <head>
@@ -80,6 +79,7 @@ PS C:\Users\新井幹太\Downloads\receipt-API> Get-Content index.html
         <div id="dropZone" class="drop-zone mb-3">
           <p class="has-text-grey">ここに画像をドラッグ＆ドロップ<br>またはクリックして選択</p>
           <input type="file" id="fileInput" accept="image/*" style="display:none;">
+          <input type="file" id="cameraInput" accept="image/*" capture="environment" style="display:none;">
         </div>
 
         <button id="openCameraBtn" class="button is-info is-outlined is-fullwidth mb-3">
@@ -341,8 +341,29 @@ function handleFile(file) {
 const cameraModal = $('cameraModal');
 const cameraVideo = $('cameraVideo');
 const cameraCanvas = $('cameraCanvas');
+const cameraInput = $('cameraInput');
+
+function isMobileDevice() {
+  return /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+}
+
+function isLineBrowser() {
+  return /Line\//i.test(navigator.userAgent);
+}
 
 $('openCameraBtn').addEventListener('click', async () => {
+  // スマホ・LINE内ブラウザでは端末のカメラ入力を優先
+  if (isMobileDevice() || isLineBrowser()) {
+    cameraInput.click();
+    return;
+  }
+
+  // PCでは従来のWebRTCカメラを使用
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    alert('このブラウザではカメラを利用できません。画像アップロードをご利用ください。');
+    return;
+  }
+
   try {
     cameraStream = await navigator.mediaDevices.getUserMedia({
       video: { facingMode: { ideal: 'environment' } },
@@ -350,9 +371,26 @@ $('openCameraBtn').addEventListener('click', async () => {
     });
     cameraVideo.srcObject = cameraStream;
     cameraModal.classList.add('is-active');
+    await cameraVideo.play();
   } catch (err) {
-    alert('カメラの起動に失敗しました。アクセスを許可してください。\n' + err.message);
+    console.error('Camera error:', err);
+    let message = 'カメラの起動に失敗しました。';
+    if (err.name === 'NotAllowedError') {
+      message += '\nカメラへのアクセスを許可してください。';
+    } else if (err.name === 'NotFoundError') {
+      message += '\nカメラが見つかりませんでした。';
+    } else {
+      message += `\n${err.message}`;
+    }
+    alert(message);
   }
+});
+
+cameraInput.addEventListener('change', (event) => {
+  const file = event.target.files?.[0];
+  if (!file) return;
+  handleFile(file);
+  cameraInput.value = '';
 });
 
 function closeCameraModal() {
