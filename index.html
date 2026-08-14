@@ -4,6 +4,19 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>レシート管理 & 出費ダッシュボード</title>
+  <script>
+    (function() {
+      var ua = navigator.userAgent || navigator.vendor || window.opera;
+      // User-Agentに "Line" が含まれているか判定
+      if (ua.indexOf('Line') > -1 || ua.indexOf('LINE') > -1) {
+        // パラメータがまだ付いていない場合のみ、パラメータを付与してリダイレクト
+        if (window.location.search.indexOf('openExternalBrowser=1') === -1) {
+          var separator = window.location.search ? '&' : '?';
+          window.location.href = window.location.href + separator + 'openExternalBrowser=1';
+        }
+      }
+    })();
+  </script>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bulma@0.9.4/css/bulma.min.css">
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <style>
