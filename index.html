@@ -17,393 +17,655 @@
       transition: background-color 0.2s;
     }
     .drop-zone:hover { background-color: #f0fdfa; }
-    #cameraVideo {
-      width: 100%;
-      border-radius: 8px;
-      background-color: #000;
-    }
+    #cameraVideo { width: 100%; border-radius: 8px; background-color: #000; }
+    .item-edit-row { border-bottom: 1px solid #eee; padding-bottom: .75rem; margin-bottom: .75rem; }
   </style>
 </head>
-<body class="has-background-light" style="min-height: 100vh;">
+<body class="has-background-light" style="min-height:100vh;">
 
-  <nav class="navbar is-primary">
-    <div class="navbar-brand">
-      <span class="navbar-item is-size-4 has-text-weight-bold">🧾 レシート管理アプリ</span>
+<nav class="navbar is-primary">
+  <div class="navbar-brand">
+    <span class="navbar-item is-size-4 has-text-weight-bold">🧾 レシート管理アプリ</span>
+  </div>
+  <div class="navbar-menu is-active">
+    <div class="navbar-end">
+      <div class="navbar-item">
+        <span id="loggedInEmail" class="mr-3"></span>
+        <button id="logoutBtn" class="button is-light is-small" style="display:none;">ログアウト</button>
+      </div>
     </div>
-  </nav>
+  </div>
+</nav>
 
-  <div class="container py-5 px-3">
-    <div class="columns">
-      
-      <!-- 左側: アップロード / カメラ撮影 & 解析結果 -->
-      <div class="column is-5">
-        <div class="box">
-          <h2 class="title is-5">📷 レシートの追加</h2>
-          
-          <div id="dropZone" class="drop-zone mb-3">
-            <p class="has-text-grey">ここに画像をドラッグ＆ドロップ<br>またはクリックして選択</p>
-            <input type="file" id="fileInput" accept="image/*" style="display: none;">
-          </div>
+<!-- 認証 -->
+<section id="authSection" class="section">
+  <div class="container" style="max-width:480px;">
+    <div class="box">
+      <h1 class="title is-4">ログイン</h1>
+      <div class="tabs is-centered">
+        <ul>
+          <li id="loginTab" class="is-active"><a onclick="switchAuth('login')">ログイン</a></li>
+          <li id="registerTab"><a onclick="switchAuth('register')">新規登録</a></li>
+        </ul>
+      </div>
 
-          <div class="field is-grouped mb-3">
-            <div class="control is-expanded">
-              <button id="openCameraBtn" class="button is-info is-outlined is-fullwidth">
-                📷 その場でカメラ撮影
-              </button>
-            </div>
-          </div>
-          
-          <button id="uploadBtn" class="button is-primary is-fullwidth" disabled>画像を解析して保存</button>
-          
-          <div id="loading" class="has-text-centered my-3" style="display: none;">
-            <p class="has-text-info">Geminiが解析中...</p>
-          </div>
-        </div>
-
-        <div id="resultBox" class="box" style="display: none;">
-          <h3 class="title is-6">直前の解析結果</h3>
-          <p><strong>店舗名:</strong> <span id="resStore">-</span></p>
-          <p><strong>合計:</strong> <span id="resTotal" class="has-text-danger is-size-5">0</span> 円</p>
-          <hr>
-          <table class="table is-fullwidth is-striped is-narrow">
-            <thead>
-              <tr><th>品目</th><th>価格</th><th>カテゴリ</th></tr>
-            </thead>
-            <tbody id="resItems"></tbody>
-          </table>
+      <div class="field">
+        <label class="label">メールアドレス</label>
+        <div class="control">
+          <input id="authEmail" class="input" type="email" autocomplete="email">
         </div>
       </div>
 
-      <!-- 右側: 集計グラフ & 内訳詳細 & 履歴 -->
-      <div class="column is-7">
-        <div class="box mb-5">
-          <div class="is-flex is-justify-content-space-between is-align-items-center mb-3">
-            <h2 class="title is-5 mb-0">📊 出費集計</h2>
-            
-            <!-- 期間フィルター -->
-            <div class="field is-grouped mb-0">
-              <div class="control">
-                <div class="select is-small">
-                  <select id="periodTypeSelect" onchange="onPeriodTypeChange()">
-                    <option value="all">全期間</option>
-                    <option value="year">年で指定</option>
-                    <option value="month">月で指定</option>
-                    <option value="week">週で指定（日付選択）</option>
-                  </select>
-                </div>
-              </div>
-              
-              <!-- ドロップダウン用コンテナ -->
-              <div class="control" id="detailValueControl" style="display: none;">
-                <div class="select is-small">
-                  <select id="detailValueSelect" onchange="loadAnalytics()"></select>
-                </div>
-              </div>
+      <div class="field">
+        <label class="label">パスワード</label>
+        <div class="control">
+          <input id="authPassword" class="input" type="password" autocomplete="current-password">
+        </div>
+        <p id="passwordHelp" class="help">8文字以上</p>
+      </div>
 
-              <!-- カレンダー用コンテナ（週指定用） -->
-              <div class="control" id="datePickerControl" style="display: none;">
-                <input class="input is-small" type="date" id="weekDatePicker" onchange="loadAnalytics()">
-              </div>
-            </div>
-          </div>
+      <button id="authSubmitBtn" class="button is-primary is-fullwidth" onclick="submitAuth()">ログイン</button>
+      <p id="authMessage" class="help is-danger mt-3"></p>
+    </div>
+  </div>
+</section>
 
-          <!-- 選択期間の合計金額表示 -->
-          <div class="notification is-primary is-light py-2 px-4 mb-3">
-            <p class="is-size-6">
-              選択期間の合計金額: <strong class="is-size-4 has-text-danger" id="periodTotalAmount">0</strong> 円
-            </p>
-          </div>
+<main id="appSection" class="container py-5 px-3" style="display:none;">
+  <div class="columns">
+    <div class="column is-5">
+      <div class="box">
+        <h2 class="title is-5">📷 レシートの追加</h2>
 
-          <!-- グラフ -->
-          <canvas id="categoryChart" style="max-height: 200px;"></canvas>
-
-          <!-- カテゴリごとの詳細テーブル -->
-          <hr class="my-3">
-          <h3 class="title is-6 mb-2">カテゴリ別内訳一覧</h3>
-          <table class="table is-fullwidth is-striped is-narrow">
-            <thead>
-              <tr>
-                <th>カテゴリ</th>
-                <th class="has-text-right">金額</th>
-                <th class="has-text-right">割合</th>
-              </tr>
-            </thead>
-            <tbody id="categoryTableBody"></tbody>
-          </table>
+        <div id="dropZone" class="drop-zone mb-3">
+          <p class="has-text-grey">ここに画像をドラッグ＆ドロップ<br>またはクリックして選択</p>
+          <input type="file" id="fileInput" accept="image/*" style="display:none;">
         </div>
 
-        <div class="box">
-          <h2 class="title is-5">📜 最近のレシート履歴</h2>
-          <div style="max-height: 250px; overflow-y: auto;">
-            <table class="table is-fullwidth is-hoverable">
-              <thead>
-                <tr><th>日時</th><th>店舗名</th><th>合計金額</th><th>操作</th></tr>
-              </thead>
-              <tbody id="historyTable"></tbody>
-            </table>
-          </div>
+        <button id="openCameraBtn" class="button is-info is-outlined is-fullwidth mb-3">
+          📷 その場でカメラ撮影
+        </button>
+        <button id="uploadBtn" class="button is-primary is-fullwidth" disabled>画像を解析して保存</button>
+
+        <div id="loading" class="has-text-centered my-3" style="display:none;">
+          <p class="has-text-info">Geminiが解析中...</p>
         </div>
       </div>
 
+      <div id="resultBox" class="box" style="display:none;">
+        <h3 class="title is-6">直前の解析結果</h3>
+        <p><strong>店舗名:</strong> <span id="resStore">-</span></p>
+        <p><strong>購入日:</strong> <span id="resDate">-</span></p>
+        <p><strong>合計:</strong> <span id="resTotal" class="has-text-danger is-size-5">0</span> 円</p>
+        <hr>
+        <table class="table is-fullwidth is-striped is-narrow">
+          <thead><tr><th>品目</th><th>価格</th><th>カテゴリ</th></tr></thead>
+          <tbody id="resItems"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="column is-7">
+      <div class="box mb-5">
+        <div class="is-flex is-justify-content-space-between is-align-items-center mb-3">
+          <h2 class="title is-5 mb-0">📊 出費集計</h2>
+          <div class="field is-grouped mb-0">
+            <div class="control">
+              <div class="select is-small">
+                <select id="periodTypeSelect" onchange="onPeriodTypeChange()">
+                  <option value="all">全期間</option>
+                  <option value="year">年で指定</option>
+                  <option value="month">月で指定</option>
+                  <option value="week">週で指定（日付選択）</option>
+                </select>
+              </div>
+            </div>
+            <div class="control" id="detailValueControl" style="display:none;">
+              <div class="select is-small">
+                <select id="detailValueSelect" onchange="loadAnalytics()"></select>
+              </div>
+            </div>
+            <div class="control" id="datePickerControl" style="display:none;">
+              <input class="input is-small" type="date" id="weekDatePicker" onchange="loadAnalytics()">
+            </div>
+          </div>
+        </div>
+
+        <div class="notification is-primary is-light py-2 px-4 mb-3">
+          <p>選択期間の合計金額:
+            <strong class="is-size-4 has-text-danger" id="periodTotalAmount">0</strong> 円
+          </p>
+        </div>
+
+        <canvas id="categoryChart" style="max-height:200px;"></canvas>
+
+        <hr class="my-3">
+        <h3 class="title is-6 mb-2">カテゴリ別内訳一覧</h3>
+        <table class="table is-fullwidth is-striped is-narrow">
+          <thead><tr><th>カテゴリ</th><th class="has-text-right">金額</th><th class="has-text-right">割合</th></tr></thead>
+          <tbody id="categoryTableBody"></tbody>
+        </table>
+      </div>
+
+      <div class="box">
+        <h2 class="title is-5">📜 最近のレシート履歴</h2>
+        <div style="max-height:300px;overflow-y:auto;">
+          <table class="table is-fullwidth is-hoverable">
+            <thead><tr><th>購入日</th><th>店舗名</th><th>合計金額</th><th>操作</th></tr></thead>
+            <tbody id="historyTable"></tbody>
+          </table>
+        </div>
+      </div>
     </div>
   </div>
+</main>
 
-  <!-- カメラ撮影用モーダルポップアップ -->
-  <div id="cameraModal" class="modal">
-    <div class="modal-background" onclick="closeCameraModal()"></div>
-    <div class="modal-card">
-      <header class="modal-card-head">
-        <p class="modal-card-title">📷 レシート撮影</p>
-        <button class="delete" aria-label="close" onclick="closeCameraModal()"></button>
-      </header>
-      <section class="modal-card-body">
-        <video id="cameraVideo" autoplay playsinline></video>
-        <canvas id="cameraCanvas" style="display: none;"></canvas>
-      </section>
-      <footer class="modal-card-foot is-justify-content-space-between">
-        <button class="button" onclick="closeCameraModal()">キャンセル</button>
-        <button class="button is-success" onclick="takeSnapshot()">📸 パシャ（撮影）</button>
-      </footer>
-    </div>
+<!-- カメラ -->
+<div id="cameraModal" class="modal">
+  <div class="modal-background" onclick="closeCameraModal()"></div>
+  <div class="modal-card">
+    <header class="modal-card-head">
+      <p class="modal-card-title">📷 レシート撮影</p>
+      <button class="delete" aria-label="close" onclick="closeCameraModal()"></button>
+    </header>
+    <section class="modal-card-body">
+      <video id="cameraVideo" autoplay playsinline></video>
+      <canvas id="cameraCanvas" style="display:none;"></canvas>
+    </section>
+    <footer class="modal-card-foot is-justify-content-space-between">
+      <button class="button" onclick="closeCameraModal()">キャンセル</button>
+      <button class="button is-success" onclick="takeSnapshot()">📸 パシャ（撮影）</button>
+    </footer>
   </div>
+</div>
 
-  <script>
-    const fileInput = document.getElementById('fileInput');
-    const dropZone = document.getElementById('dropZone');
-    const uploadBtn = document.getElementById('uploadBtn');
-    let selectedFile = null;
-    let chartInstance = null;
-    let cameraStream = null;
+<!-- 編集 -->
+<div id="editModal" class="modal">
+  <div class="modal-background" onclick="closeEditModal()"></div>
+  <div class="modal-card" style="width:min(900px,95vw);">
+    <header class="modal-card-head">
+      <p class="modal-card-title">✏️ レシートを修正</p>
+      <button class="delete" aria-label="close" onclick="closeEditModal()"></button>
+    </header>
+    <section class="modal-card-body">
+      <input type="hidden" id="editReceiptId">
 
-    let availableYears = [];
-    let availableMonths = [];
+      <div class="columns">
+        <div class="column">
+          <label class="label">店舗名</label>
+          <input id="editStoreName" class="input">
+        </div>
+        <div class="column">
+          <label class="label">購入日</label>
+          <input id="editReceiptDate" class="input" type="date">
+        </div>
+        <div class="column">
+          <label class="label">合計金額</label>
+          <input id="editTotal" class="input" type="number" min="0">
+        </div>
+      </div>
 
-    // 初期値として今日の日付を設定 (YYYY-MM-DD)
-    document.getElementById('weekDatePicker').value = new Date().toISOString().split('T')[0];
+      <div class="is-flex is-justify-content-space-between is-align-items-center mb-3">
+        <h3 class="title is-6 mb-0">購入品目</h3>
+        <button class="button is-small is-info is-light" onclick="addEditItem()">＋ 品目追加</button>
+      </div>
 
-    dropZone.addEventListener('click', () => fileInput.click());
-    fileInput.addEventListener('change', (e) => handleFile(e.target.files[0]));
-    dropZone.addEventListener('dragover', (e) => { e.preventDefault(); });
-    dropZone.addEventListener('drop', (e) => {
-      e.preventDefault();
-      if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
-    });
+      <div id="editItems"></div>
+    </section>
+    <footer class="modal-card-foot">
+      <button class="button" onclick="closeEditModal()">キャンセル</button>
+      <button class="button is-primary" onclick="saveReceiptEdit()">保存</button>
+    </footer>
+  </div>
+</div>
 
-    function handleFile(file) {
-      if (!file.type.startsWith('image/')) return alert('画像ファイルを選択してください');
-      selectedFile = file;
-      dropZone.querySelector('p').innerHTML = `選択中: <strong>${file.name}</strong>`;
-      uploadBtn.disabled = false;
-    }
+<script>
+const TOKEN_KEY = 'receipt_manager_token';
+const CATEGORIES = ['食費','日用品','交通費','衣服','美容・健康','娯楽','その他'];
 
-    // --- カメラ起動関連処理 ---
-    const cameraModal = document.getElementById('cameraModal');
-    const cameraVideo = document.getElementById('cameraVideo');
-    const cameraCanvas = document.getElementById('cameraCanvas');
+let selectedFile = null;
+let chartInstance = null;
+let cameraStream = null;
+let availableYears = [];
+let availableMonths = [];
+let authMode = 'login';
 
-    document.getElementById('openCameraBtn').addEventListener('click', async () => {
-      try {
-        // スマホなどの背面カメラを優先起動（無ければインカメラ/Webカメラ）
-        cameraStream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: { ideal: "environment" } },
-          audio: false
-        });
-        cameraVideo.srcObject = cameraStream;
-        cameraModal.classList.add('is-active');
-      } catch (err) {
-        alert('カメラの起動に失敗しました。アクセスを許可してください。\n' + err.message);
-      }
-    });
+const $ = id => document.getElementById(id);
 
-    function closeCameraModal() {
-      if (cameraStream) {
-        cameraStream.getTracks().forEach(track => track.stop());
-      }
-      cameraModal.classList.remove('is-active');
-    }
-
-    function takeSnapshot() {
-      const context = cameraCanvas.getContext('2d');
-      cameraCanvas.width = cameraVideo.videoWidth;
-      cameraCanvas.height = cameraVideo.videoHeight;
-      context.drawImage(cameraVideo, 0, 0, cameraCanvas.width, cameraCanvas.height);
-
-      // Canvas から Blob (Fileオブジェクト化) を作成
-      cameraCanvas.toBlob((blob) => {
-        const file = new File([blob], `photo_${Date.now()}.jpg`, { type: 'image/jpeg' });
-        handleFile(file);
-        closeCameraModal();
-      }, 'image/jpeg', 0.9);
-    }
-
-    // --- 解析 & 送信処理 ---
-    uploadBtn.addEventListener('click', async () => {
-      if (!selectedFile) return;
-      const formData = new FormData();
-      formData.append('file', selectedFile);
-
-      document.getElementById('loading').style.display = 'block';
-      uploadBtn.disabled = true;
-
-      try {
-        const res = await fetch('/analyze-receipt', { method: 'POST', body: formData });
-        const json = await res.json();
-
-        if (json.status === 'success') {
-          showResult(json.data);
-          loadAnalytics();
-          loadHistory();
-        } else {
-          alert('解析に失敗しました');
-        }
-      } catch (err) {
-        alert('エラーが発生しました: ' + err.message);
-      } finally {
-        document.getElementById('loading').style.display = 'none';
-        uploadBtn.disabled = false;
-      }
-    });
-
-    function showResult(data) {
-  document.getElementById('resStore').textContent = data.store_name;
-  document.getElementById('resTotal').textContent = data.total.toLocaleString();
-  
-  // レシート日付を表示に追加
-  const dateEl = document.getElementById('resDate');
-  if (dateEl) dateEl.textContent = data.receipt_date || '-';
-
-  const tbody = document.getElementById('resItems');
-  tbody.innerHTML = '';
-  data.items.forEach(item => {
-    tbody.innerHTML += `<tr><td>${item.name}</td><td>${item.price.toLocaleString()}円</td><td><span class="tag is-info is-light">${item.category}</span></td></tr>`;
-  });
-  document.getElementById('resultBox').style.display = 'block';
+function authHeaders() {
+  const token = localStorage.getItem(TOKEN_KEY);
+  return token ? { 'Authorization': `Bearer ${token}` } : {};
 }
 
-    // 期間指定タイプ切替
-    function onPeriodTypeChange() {
-      const type = document.getElementById('periodTypeSelect').value;
-      const detailControl = document.getElementById('detailValueControl');
-      const datePickerControl = document.getElementById('datePickerControl');
-      const detailSelect = document.getElementById('detailValueSelect');
+async function apiFetch(url, options = {}) {
+  options.headers = { ...(options.headers || {}), ...authHeaders() };
+  const res = await fetch(url, options);
 
-      detailSelect.innerHTML = '';
-      detailControl.style.display = 'none';
-      datePickerControl.style.display = 'none';
+  if (res.status === 401) {
+    logout(false);
+    throw new Error('ログインが必要です');
+  }
+  return res;
+}
 
-      if (type === 'year') {
-        detailControl.style.display = 'inline-block';
-        availableYears.forEach(y => {
-          detailSelect.innerHTML += `<option value="${y}">${y}年</option>`;
-        });
-      } else if (type === 'month') {
-        detailControl.style.display = 'inline-block';
-        availableMonths.forEach(m => {
-          const [y, month] = m.split('-');
-          detailSelect.innerHTML += `<option value="${m}">${y}年${parseInt(month)}月</option>`;
-        });
-      } else if (type === 'week') {
-        datePickerControl.style.display = 'inline-block';
-      }
-      loadAnalytics();
+function switchAuth(mode) {
+  authMode = mode;
+  $('loginTab').classList.toggle('is-active', mode === 'login');
+  $('registerTab').classList.toggle('is-active', mode === 'register');
+  $('authSubmitBtn').textContent = mode === 'login' ? 'ログイン' : '新規登録';
+  $('passwordHelp').textContent = mode === 'register' ? '8文字以上' : '';
+  $('authMessage').textContent = '';
+}
+
+async function submitAuth() {
+  const email = $('authEmail').value.trim();
+  const password = $('authPassword').value;
+
+  if (!email || !password) {
+    $('authMessage').textContent = 'メールアドレスとパスワードを入力してください';
+    return;
+  }
+
+  const endpoint = authMode === 'login' ? '/api/login' : '/api/register';
+
+  try {
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({email, password})
+    });
+    const data = await res.json();
+
+    if (!res.ok) {
+      throw new Error(data.detail || '認証に失敗しました');
     }
 
-    // 集計データの読み込み＆グラフ描画
-    async function loadAnalytics() {
-      const type = document.getElementById('periodTypeSelect').value;
-      let value = '';
+    localStorage.setItem(TOKEN_KEY, data.token);
+    await showApp();
+  } catch (err) {
+    $('authMessage').textContent = err.message;
+  }
+}
 
-      if (type === 'year' || type === 'month') {
-        value = document.getElementById('detailValueSelect').value || '';
-      } else if (type === 'week') {
-        value = document.getElementById('weekDatePicker').value || '';
-      }
+async function showApp() {
+  const res = await apiFetch('/api/me');
+  if (!res.ok) {
+    logout(false);
+    return;
+  }
 
-      const res = await fetch(`/analytics?period_type=${type}&value=${value}`);
-      const data = await res.json();
+  const me = await res.json();
+  $('authSection').style.display = 'none';
+  $('appSection').style.display = 'block';
+  $('logoutBtn').style.display = 'inline-block';
+  $('loggedInEmail').textContent = me.email;
 
-      availableYears = data.available_years || [];
-      availableMonths = data.available_months || [];
+  $('weekDatePicker').value = new Date().toISOString().split('T')[0];
+  await loadAnalytics();
+  await loadHistory();
+}
 
-      // 1. 合計金額の計算
-      const totalSum = data.by_category.reduce((sum, item) => sum + item.total, 0);
-      document.getElementById('periodTotalAmount').textContent = totalSum.toLocaleString();
+function logout(showMessage = true) {
+  localStorage.removeItem(TOKEN_KEY);
+  $('appSection').style.display = 'none';
+  $('authSection').style.display = 'block';
+  $('logoutBtn').style.display = 'none';
+  $('loggedInEmail').textContent = '';
+  if (showMessage) $('authMessage').textContent = 'ログアウトしました';
+}
 
-      // 2. カテゴリ別内訳表の更新
-      const tableBody = document.getElementById('categoryTableBody');
-      tableBody.innerHTML = '';
+$('logoutBtn').addEventListener('click', () => logout());
 
-      if (data.by_category.length === 0) {
-        tableBody.innerHTML = '<tr><td colspan="3" class="has-text-centered has-text-grey">この期間のデータはありません</td></tr>';
-      } else {
-        data.by_category.forEach(c => {
-          const percentage = totalSum > 0 ? ((c.total / totalSum) * 100).toFixed(1) : 0;
-          tableBody.innerHTML += `
-            <tr>
-              <td><strong>${c.category}</strong></td>
-              <td class="has-text-right">${c.total.toLocaleString()} 円</td>
-              <td class="has-text-right has-text-grey">${percentage} %</td>
-            </tr>
-          `;
-        });
-      }
+const fileInput = $('fileInput');
+const dropZone = $('dropZone');
+const uploadBtn = $('uploadBtn');
 
-      // 3. 円グラフの更新
-      const labels = data.by_category.map(c => c.category);
-      const totals = data.by_category.map(c => c.total);
+dropZone.addEventListener('click', () => fileInput.click());
+fileInput.addEventListener('change', e => handleFile(e.target.files[0]));
+dropZone.addEventListener('dragover', e => e.preventDefault());
+dropZone.addEventListener('drop', e => {
+  e.preventDefault();
+  if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
+});
 
-      const ctx = document.getElementById('categoryChart').getContext('2d');
-      if (chartInstance) chartInstance.destroy();
+function handleFile(file) {
+  if (!file || !file.type.startsWith('image/')) {
+    alert('画像ファイルを選択してください');
+    return;
+  }
+  selectedFile = file;
+  dropZone.querySelector('p').innerHTML = `選択中: <strong>${escapeHtml(file.name)}</strong>`;
+  uploadBtn.disabled = false;
+}
 
-      chartInstance = new Chart(ctx, {
-        type: 'doughnut',
-        data: {
-          labels: labels,
-          datasets: [{
-            data: totals,
-            backgroundColor: ['#ff6384', '#36a2eb', '#cc65fe', '#ffce56', '#4bc0c0', '#9966ff']
-          }]
-        }
-      });
+const cameraModal = $('cameraModal');
+const cameraVideo = $('cameraVideo');
+const cameraCanvas = $('cameraCanvas');
+
+$('openCameraBtn').addEventListener('click', async () => {
+  try {
+    cameraStream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: 'environment' } },
+      audio: false
+    });
+    cameraVideo.srcObject = cameraStream;
+    cameraModal.classList.add('is-active');
+  } catch (err) {
+    alert('カメラの起動に失敗しました。アクセスを許可してください。\n' + err.message);
+  }
+});
+
+function closeCameraModal() {
+  if (cameraStream) {
+    cameraStream.getTracks().forEach(track => track.stop());
+    cameraStream = null;
+  }
+  cameraModal.classList.remove('is-active');
+}
+
+function takeSnapshot() {
+  const context = cameraCanvas.getContext('2d');
+  cameraCanvas.width = cameraVideo.videoWidth;
+  cameraCanvas.height = cameraVideo.videoHeight;
+  context.drawImage(cameraVideo, 0, 0, cameraCanvas.width, cameraCanvas.height);
+
+  cameraCanvas.toBlob(blob => {
+    const file = new File([blob], `photo_${Date.now()}.jpg`, {type:'image/jpeg'});
+    handleFile(file);
+    closeCameraModal();
+  }, 'image/jpeg', 0.9);
+}
+
+uploadBtn.addEventListener('click', async () => {
+  if (!selectedFile) return;
+
+  const formData = new FormData();
+  formData.append('file', selectedFile);
+
+  $('loading').style.display = 'block';
+  uploadBtn.disabled = true;
+
+  try {
+    const res = await apiFetch('/analyze-receipt', {method:'POST', body:formData});
+    const json = await res.json();
+
+    if (!res.ok) throw new Error(json.detail || json.message || '解析に失敗しました');
+
+    if (json.status === 'success') {
+      showResult(json.data);
+      await loadAnalytics();
+      await loadHistory();
+      selectedFile = null;
+      fileInput.value = '';
+      dropZone.querySelector('p').textContent = 'ここに画像をドラッグ＆ドロップ\nまたはクリックして選択';
+    }
+  } catch (err) {
+    alert('エラーが発生しました: ' + err.message);
+  } finally {
+    $('loading').style.display = 'none';
+    uploadBtn.disabled = true;
+  }
+});
+
+function showResult(data) {
+  $('resStore').textContent = data.store_name || '不明';
+  $('resDate').textContent = data.receipt_date || '-';
+  $('resTotal').textContent = Number(data.total || 0).toLocaleString();
+
+  const tbody = $('resItems');
+  tbody.innerHTML = '';
+
+  (data.items || []).forEach(item => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${escapeHtml(item.name)}</td>
+      <td>${Number(item.price || 0).toLocaleString()}円</td>
+      <td><span class="tag is-info is-light">${escapeHtml(item.category)}</span></td>`;
+    tbody.appendChild(tr);
+  });
+
+  $('resultBox').style.display = 'block';
+}
+
+function onPeriodTypeChange() {
+  const type = $('periodTypeSelect').value;
+  $('detailValueControl').style.display = 'none';
+  $('datePickerControl').style.display = 'none';
+  $('detailValueSelect').innerHTML = '';
+
+  if (type === 'year') {
+    $('detailValueControl').style.display = 'inline-block';
+    availableYears.forEach(y => {
+      $('detailValueSelect').innerHTML += `<option value="${y}">${y}年</option>`;
+    });
+  } else if (type === 'month') {
+    $('detailValueControl').style.display = 'inline-block';
+    availableMonths.forEach(m => {
+      const [y, month] = m.split('-');
+      $('detailValueSelect').innerHTML += `<option value="${m}">${y}年${parseInt(month)}月</option>`;
+    });
+  } else if (type === 'week') {
+    $('datePickerControl').style.display = 'inline-block';
+  }
+
+  loadAnalytics();
+}
+
+async function loadAnalytics() {
+  try {
+    const type = $('periodTypeSelect').value;
+    let value = '';
+
+    if (type === 'year' || type === 'month') {
+      value = $('detailValueSelect').value || '';
+    } else if (type === 'week') {
+      value = $('weekDatePicker').value || '';
     }
 
-    // 履歴取得 ＆ 削除機能
-    async function loadHistory() {
-      const res = await fetch('/receipts');
-      const data = await res.json();
-      const tbody = document.getElementById('historyTable');
-      tbody.innerHTML = '';
+    const res = await apiFetch(`/analytics?period_type=${encodeURIComponent(type)}&value=${encodeURIComponent(value)}`);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || '集計取得に失敗しました');
 
-      data.receipts.forEach(r => {
-        tbody.innerHTML += `
+    availableYears = data.available_years || [];
+    availableMonths = data.available_months || [];
+
+    const totalSum = data.by_category.reduce((sum, item) => sum + item.total, 0);
+    $('periodTotalAmount').textContent = totalSum.toLocaleString();
+
+    const tableBody = $('categoryTableBody');
+    tableBody.innerHTML = '';
+
+    if (data.by_category.length === 0) {
+      tableBody.innerHTML = '<tr><td colspan="3" class="has-text-centered has-text-grey">この期間のデータはありません</td></tr>';
+    } else {
+      data.by_category.forEach(c => {
+        const percentage = totalSum > 0 ? ((c.total / totalSum) * 100).toFixed(1) : '0.0';
+        tableBody.innerHTML += `
           <tr>
-            <td>${r.created_at.split(' ')[0]}</td>
-            <td>${r.store_name || '不明'}</td>
-            <td>${r.total.toLocaleString()}円</td>
-            <td>
-              <button class="button is-danger is-small is-outlined" onclick="deleteReceipt(${r.id})">削除</button>
-            </td>
-          </tr>
-        `;
+            <td><strong>${escapeHtml(c.category)}</strong></td>
+            <td class="has-text-right">${c.total.toLocaleString()} 円</td>
+            <td class="has-text-right has-text-grey">${percentage} %</td>
+          </tr>`;
       });
     }
 
-    async function deleteReceipt(id) {
-      if (!confirm('このレシートデータを削除してもよろしいですか？')) return;
+    const labels = data.by_category.map(c => c.category);
+    const totals = data.by_category.map(c => c.total);
+    const ctx = $('categoryChart').getContext('2d');
 
-      const res = await fetch(`/receipts/${id}`, { method: 'DELETE' });
-      const json = await res.json();
+    if (chartInstance) chartInstance.destroy();
 
-      if (json.status === 'success') {
-        loadAnalytics();
-        loadHistory();
-      } else {
-        alert('削除に失敗しました');
+    chartInstance = new Chart(ctx, {
+      type: 'doughnut',
+      data: {
+        labels,
+        datasets: [{
+          data: totals,
+          backgroundColor: ['#ff6384','#36a2eb','#cc65fe','#ffce56','#4bc0c0','#9966ff','#8dd17e']
+        }]
       }
-    }
+    });
+  } catch (err) {
+    if (localStorage.getItem(TOKEN_KEY)) console.error(err);
+  }
+}
 
-    loadAnalytics();
-    loadHistory();
-  </script>
+async function loadHistory() {
+  const res = await apiFetch('/receipts');
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.detail || '履歴取得に失敗しました');
+
+  const tbody = $('historyTable');
+  tbody.innerHTML = '';
+
+  if (data.receipts.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="4" class="has-text-centered has-text-grey">レシートはありません</td></tr>';
+    return;
+  }
+
+  data.receipts.forEach(r => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${escapeHtml(r.receipt_date || '-')}</td>
+      <td>${escapeHtml(r.store_name || '不明')}</td>
+      <td>${Number(r.total || 0).toLocaleString()}円</td>
+      <td>
+        <div class="buttons are-small">
+          <button class="button is-info is-outlined" onclick="openEditModal(${r.id})">編集</button>
+          <button class="button is-danger is-outlined" onclick="deleteReceipt(${r.id})">削除</button>
+        </div>
+      </td>`;
+    tbody.appendChild(tr);
+  });
+}
+
+async function openEditModal(id) {
+  try {
+    const res = await apiFetch(`/receipts/${id}`);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'レシート取得に失敗しました');
+
+    $('editReceiptId').value = data.id;
+    $('editStoreName').value = data.store_name || '';
+    $('editReceiptDate').value = data.receipt_date || '';
+    $('editTotal').value = data.total || 0;
+
+    $('editItems').innerHTML = '';
+    (data.items || []).forEach(item => addEditItem(item));
+
+    $('editModal').classList.add('is-active');
+  } catch (err) {
+    alert(err.message);
+  }
+}
+
+function addEditItem(item = {name:'', price:0, category:'その他'}) {
+  const row = document.createElement('div');
+  row.className = 'item-edit-row';
+  row.innerHTML = `
+    <div class="columns is-mobile is-multiline">
+      <div class="column is-4">
+        <input class="input edit-item-name" placeholder="品目名" value="${escapeAttr(item.name)}">
+      </div>
+      <div class="column is-3">
+        <input class="input edit-item-price" type="number" min="0" placeholder="価格" value="${Number(item.price || 0)}">
+      </div>
+      <div class="column is-4">
+        <div class="select is-fullwidth">
+          <select class="edit-item-category">
+            ${CATEGORIES.map(c => `<option value="${escapeAttr(c)}" ${c === item.category ? 'selected' : ''}>${escapeHtml(c)}</option>`).join('')}
+          </select>
+        </div>
+      </div>
+      <div class="column is-1">
+        <button class="button is-danger is-light" onclick="this.closest('.item-edit-row').remove()">×</button>
+      </div>
+    </div>`;
+  $('editItems').appendChild(row);
+}
+
+function closeEditModal() {
+  $('editModal').classList.remove('is-active');
+}
+
+async function saveReceiptEdit() {
+  const rows = [...document.querySelectorAll('.item-edit-row')];
+
+  const items = rows.map(row => ({
+    name: row.querySelector('.edit-item-name').value.trim(),
+    price: Number(row.querySelector('.edit-item-price').value || 0),
+    category: row.querySelector('.edit-item-category').value
+  })).filter(item => item.name);
+
+  const payload = {
+    store_name: $('editStoreName').value.trim() || '不明',
+    total: Number($('editTotal').value || 0),
+    receipt_date: $('editReceiptDate').value,
+    items
+  };
+
+  if (!payload.receipt_date) {
+    alert('購入日を入力してください');
+    return;
+  }
+
+  try {
+    const res = await apiFetch(`/receipts/${$('editReceiptId').value}`, {
+      method: 'PUT',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(payload)
+    });
+
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || '保存に失敗しました');
+
+    closeEditModal();
+    await loadHistory();
+    await loadAnalytics();
+    alert('レシートを更新しました');
+  } catch (err) {
+    alert(err.message);
+  }
+}
+
+async function deleteReceipt(id) {
+  if (!confirm('このレシートデータを削除してもよろしいですか？')) return;
+
+  try {
+    const res = await apiFetch(`/receipts/${id}`, {method:'DELETE'});
+    const json = await res.json();
+
+    if (!res.ok) throw new Error(json.detail || '削除に失敗しました');
+
+    await loadAnalytics();
+    await loadHistory();
+  } catch (err) {
+    alert(err.message);
+  }
+}
+
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, ch => ({
+    '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#039;'
+  }[ch]));
+}
+
+function escapeAttr(value) {
+  return escapeHtml(value);
+}
+
+async function initialize() {
+  if (localStorage.getItem(TOKEN_KEY)) {
+    try {
+      await showApp();
+      return;
+    } catch (err) {
+      logout(false);
+    }
+  }
+  switchAuth('login');
+}
+
+initialize();
+</script>
 </body>
 </html>

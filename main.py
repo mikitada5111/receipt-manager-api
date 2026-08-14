@@ -1,103 +1,228 @@
 import os
 import json
-import sqlite3
-from datetime import datetime
+from datetime import date, datetime, timedelta, timezone
 from typing import List, Optional
-from fastapi import FastAPI, File, UploadFile, HTTPException
+
+import jwt
+import psycopg
+from psycopg.rows import dict_row
+from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile, status
 from fastapi.responses import HTMLResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
 from google import genai
 from google.genai import types
+from pwdlib import PasswordHash
+from pydantic import BaseModel, EmailStr
 
 app = FastAPI()
+password_hash = PasswordHash.recommended()
 
-# --- データベース初期化 ---
-DB_NAME = "receipts.db"
+DATABASE_URL = os.getenv("DATABASE_URL")
+JWT_SECRET = os.getenv("JWT_SECRET")
+JWT_ALGORITHM = "HS256"
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
+if not DATABASE_URL:
+    raise RuntimeError("DATABASE_URL is not set")
+if not JWT_SECRET:
+    raise RuntimeError("JWT_SECRET is not set")
+
+
+def get_conn():
+    return psycopg.connect(DATABASE_URL, row_factory=dict_row)
+
 
 def init_db():
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    # receipt_date カラムが存在しない場合はテーブル作成時に追加
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS receipts (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            store_name TEXT,
-            total INTEGER,
-            receipt_date TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS items (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            receipt_id INTEGER,
-            name TEXT,
-            price INTEGER,
-            category TEXT,
-            FOREIGN KEY (receipt_id) REFERENCES receipts(id) ON DELETE CASCADE
-        )
-    ''')
-    
-    # 既存DBの場合、receipt_date カラムが無ければ追加するマイグレーション処理
-    cursor.execute("PRAGMA table_info(receipts)")
-    columns = [column[1] for column in cursor.fetchall()]
-    if 'receipt_date' not in columns:
-        cursor.execute("ALTER TABLE receipts ADD COLUMN receipt_date TEXT")
-        # 既存データの receipt_date を created_at の日付で更新
-        cursor.execute("UPDATE receipts SET receipt_date = DATE(created_at) WHERE receipt_date IS NULL")
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS users (
+                    id BIGSERIAL PRIMARY KEY,
+                    email TEXT UNIQUE NOT NULL,
+                    password_hash TEXT NOT NULL,
+                    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS receipts (
+                    id BIGSERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    store_name TEXT,
+                    total INTEGER NOT NULL DEFAULT 0,
+                    receipt_date DATE,
+                    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS items (
+                    id BIGSERIAL PRIMARY KEY,
+                    receipt_id BIGINT NOT NULL REFERENCES receipts(id) ON DELETE CASCADE,
+                    name TEXT NOT NULL,
+                    price INTEGER NOT NULL DEFAULT 0,
+                    category TEXT NOT NULL
+                )
+            """)
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_receipts_user_date ON receipts(user_id, receipt_date DESC)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_items_receipt_id ON items(receipt_id)")
+        conn.commit()
 
-    conn.commit()
-    conn.close()
 
 init_db()
 
-# --- Pydantic スキーマ定義 ---
+
 class ItemSchema(BaseModel):
     name: str
     price: int
     category: str
 
+
 class ReceiptAnalysisSchema(BaseModel):
     store_name: Optional[str] = "不明"
     total: int
-    receipt_date: Optional[str] = None  # レシートに記載されている日付 (YYYY-MM-DD)
+    receipt_date: Optional[str] = None
     items: List[ItemSchema]
 
-# --- Gemini API 設定 ---
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
+class RegisterRequest(BaseModel):
+    email: EmailStr
+    password: str
+
+
+class LoginRequest(BaseModel):
+    email: EmailStr
+    password: str
+
+
+class ReceiptUpdateItem(BaseModel):
+    name: str
+    price: int
+    category: str
+
+
+class ReceiptUpdate(BaseModel):
+    store_name: str
+    total: int
+    receipt_date: str
+    items: List[ReceiptUpdateItem]
+
+
+def create_token(user_id: int, email: str):
+    payload = {
+        "sub": str(user_id),
+        "email": email,
+        "exp": datetime.now(timezone.utc) + timedelta(days=7),
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+
+def current_user(authorization: Optional[str] = Header(default=None)):
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="ログインが必要です")
+
+    try:
+        payload = jwt.decode(
+            authorization[7:],
+            JWT_SECRET,
+            algorithms=[JWT_ALGORITHM],
+        )
+        return {"id": int(payload["sub"]), "email": payload["email"]}
+    except (jwt.InvalidTokenError, KeyError, ValueError):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="ログイン情報が無効です")
+
 
 @app.get("/", response_class=HTMLResponse)
 async def read_index():
     with open("index.html", "r", encoding="utf-8") as f:
         return f.read()
 
+
+@app.post("/api/register")
+async def register(payload: RegisterRequest):
+    if len(payload.password) < 8:
+        raise HTTPException(status_code=400, detail="パスワードは8文字以上にしてください")
+
+    email = payload.email.lower()
+    hashed = password_hash.hash(payload.password)
+
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO users (email, password_hash) VALUES (%s, %s) RETURNING id",
+                    (email, hashed),
+                )
+                user_id = cur.fetchone()["id"]
+            conn.commit()
+    except psycopg.errors.UniqueViolation:
+        raise HTTPException(status_code=409, detail="このメールアドレスは既に登録されています")
+
+    return {
+        "status": "success",
+        "token": create_token(user_id, email),
+        "email": email,
+    }
+
+
+@app.post("/api/login")
+async def login(payload: LoginRequest):
+    email = payload.email.lower()
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, email, password_hash FROM users WHERE email = %s",
+                (email,),
+            )
+            user = cur.fetchone()
+
+    if not user or not password_hash.verify(payload.password, user["password_hash"]):
+        raise HTTPException(status_code=401, detail="メールアドレスまたはパスワードが違います")
+
+    return {
+        "status": "success",
+        "token": create_token(user["id"], user["email"]),
+        "email": user["email"],
+    }
+
+
+@app.get("/api/me")
+async def me(user=Depends(current_user)):
+    return {"id": user["id"], "email": user["email"]}
+
+
 @app.post("/analyze-receipt")
-async def analyze_receipt(file: UploadFile = File(...)):
+async def analyze_receipt(
+    file: UploadFile = File(...),
+    user=Depends(current_user),
+):
     if not GEMINI_API_KEY:
         raise HTTPException(status_code=500, detail="GEMINI_API_KEY is not set")
 
+    if not file.content_type or not file.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="画像ファイルを選択してください")
+
     contents = await file.read()
-    
     client = genai.Client(api_key=GEMINI_API_KEY)
 
     prompt = (
         "レシートの画像を解析し、以下の情報を抽出してください。\n"
         "1. 店舗名 (store_name)\n"
         "2. 合計金額 (total)\n"
-        "3. レシートに記載されている購入日付 (receipt_date)。必ず 'YYYY-MM-DD' 形式（例: 2024-03-15）で抽出してください。西暦が書かれていない場合は、今年の西暦と推測してください。日付が読み取れない場合は null にしてください。\n"
-        "4. 各購入品目の名称 (name)、価格 (price)、および最も適したカテゴリ (category - 食費, 日用品, 交通費, 衣服, 美容・健康, 娯楽, その他 など)。"
+        "3. レシートに記載されている購入日付 (receipt_date)。"
+        "必ず YYYY-MM-DD 形式で返してください。"
+        "西暦が書かれていない場合は今年の西暦を推測してください。"
+        "日付を読み取れない場合は null にしてください。\n"
+        "4. 各購入品目の名称、価格、最も適したカテゴリを抽出してください。"
     )
 
     try:
         response = client.models.generate_content(
-            model='gemini-2.5-flash',
+            model="gemini-2.5-flash",
             contents=[
                 types.Part.from_bytes(
                     data=contents,
-                    mime_type=file.content_type or "image/jpeg",
+                    mime_type=file.content_type,
                 ),
-                prompt
+                prompt,
             ],
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
@@ -106,107 +231,266 @@ async def analyze_receipt(file: UploadFile = File(...)):
         )
 
         data = json.loads(response.text)
-        
-        # レシート日付の確定（解析できなかった場合は本日日付）
-        r_date = data.get("receipt_date")
-        if not r_date:
-            r_date = datetime.now().strftime("%Y-%m-%d")
+        receipt_date = data.get("receipt_date") or datetime.now().strftime("%Y-%m-%d")
 
-        # DBに保存
-        conn = sqlite3.connect(DB_NAME)
-        cursor = conn.cursor()
-        
-        cursor.execute(
-            "INSERT INTO receipts (store_name, total, receipt_date) VALUES (?, ?, ?)",
-            (data.get("store_name", "不明"), data.get("total", 0), r_date)
-        )
-        receipt_id = cursor.lastrowid
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO receipts (user_id, store_name, total, receipt_date)
+                    VALUES (%s, %s, %s, %s)
+                    RETURNING id
+                    """,
+                    (
+                        user["id"],
+                        data.get("store_name", "不明"),
+                        data.get("total", 0),
+                        receipt_date,
+                    ),
+                )
+                receipt_id = cur.fetchone()["id"]
 
-        for item in data.get("items", []):
-            cursor.execute(
-                "INSERT INTO items (receipt_id, name, price, category) VALUES (?, ?, ?, ?)",
-                (receipt_id, item.get("name"), item.get("price"), item.get("category"))
-            )
+                for item in data.get("items", []):
+                    cur.execute(
+                        """
+                        INSERT INTO items (receipt_id, name, price, category)
+                        VALUES (%s, %s, %s, %s)
+                        """,
+                        (
+                            receipt_id,
+                            item.get("name", ""),
+                            item.get("price", 0),
+                            item.get("category", "その他"),
+                        ),
+                    )
 
-        conn.commit()
-        conn.close()
+            conn.commit()
 
-        data["receipt_date"] = r_date
+        data["receipt_date"] = receipt_date
+        data["id"] = receipt_id
+
         return {"status": "success", "data": data}
 
     except Exception as e:
         print(f"Error during analysis: {e}")
-        return JSONResponse(status_code=500, content={"status": "error", "message": str(e)})
+        return JSONResponse(
+            status_code=500,
+            content={"status": "error", "message": str(e)},
+        )
+
 
 @app.get("/analytics")
-async def get_analytics(period_type: str = "all", value: str = ""):
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
+async def get_analytics(
+    period_type: str = "all",
+    value: str = "",
+    user=Depends(current_user),
+):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT DISTINCT EXTRACT(YEAR FROM receipt_date)::int AS year
+                FROM receipts
+                WHERE user_id = %s AND receipt_date IS NOT NULL
+                ORDER BY year DESC
+                """,
+                (user["id"],),
+            )
+            years = [str(row["year"]) for row in cur.fetchall()]
 
-    # 利用可能な年・月一覧を取得 (receipt_date 基準)
-    cursor.execute("SELECT DISTINCT strftime('%Y', receipt_date) FROM receipts WHERE receipt_date IS NOT NULL ORDER BY 1 DESC")
-    years = [r[0] for r in cursor.fetchall() if r[0]]
+            cur.execute(
+                """
+                SELECT DISTINCT TO_CHAR(receipt_date, 'YYYY-MM') AS month
+                FROM receipts
+                WHERE user_id = %s AND receipt_date IS NOT NULL
+                ORDER BY month DESC
+                """,
+                (user["id"],),
+            )
+            months = [row["month"] for row in cur.fetchall()]
 
-    cursor.execute("SELECT DISTINCT strftime('%Y-%m', receipt_date) FROM receipts WHERE receipt_date IS NOT NULL ORDER BY 1 DESC")
-    months = [r[0] for r in cursor.fetchall() if r[0]]
+            where_clause = "WHERE r.user_id = %s"
+            params = [user["id"]]
 
-    # フィルタリング条件の構築
-    where_clause = ""
-    params = []
+            if period_type == "year" and value:
+                where_clause += " AND EXTRACT(YEAR FROM r.receipt_date)::int = %s"
+                params.append(int(value))
 
-    if period_type == "year" and value:
-        where_clause = "WHERE strftime('%Y', r.receipt_date) = ?"
-        params.append(value)
-    elif period_type == "month" and value:
-        where_clause = "WHERE strftime('%Y-%m', r.receipt_date) = ?"
-        params.append(value)
-    elif period_type == "week" and value:
-        where_clause = "WHERE r.receipt_date BETWEEN date(?, 'weekday 1', '-7 days') AND date(?, 'weekday 1', '-1 days')"
-        params.extend([value, value])
+            elif period_type == "month" and value:
+                where_clause += " AND TO_CHAR(r.receipt_date, 'YYYY-MM') = %s"
+                params.append(value)
 
-    query = f'''
-        SELECT i.category, SUM(i.price) as total
-        FROM items i
-        JOIN receipts r ON i.receipt_id = r.id
-        {where_clause}
-        GROUP BY i.category
-        ORDER BY total DESC
-    '''
-    cursor.execute(query, params)
-    category_data = [{"category": row[0], "total": row[1]} for row[1] in cursor.fetchall()]
+            elif period_type == "week" and value:
+                try:
+                    selected = date.fromisoformat(value)
+                except ValueError:
+                    raise HTTPException(status_code=400, detail="日付形式が不正です")
 
-    conn.close()
+                monday = selected - timedelta(days=selected.weekday())
+                sunday = monday + timedelta(days=6)
+
+                where_clause += " AND r.receipt_date BETWEEN %s AND %s"
+                params.extend([monday, sunday])
+
+            cur.execute(
+                f"""
+                SELECT i.category, COALESCE(SUM(i.price), 0) AS total
+                FROM items i
+                JOIN receipts r ON i.receipt_id = r.id
+                {where_clause}
+                GROUP BY i.category
+                ORDER BY total DESC
+                """,
+                params,
+            )
+
+            category_data = [
+                {
+                    "category": row["category"],
+                    "total": int(row["total"]),
+                }
+                for row in cur.fetchall()
+            ]
 
     return {
         "by_category": category_data,
         "available_years": years,
-        "available_months": months
+        "available_months": months,
     }
 
+
 @app.get("/receipts")
-async def get_receipts():
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    
-    # receipt_date を優先表示（無ければ created_at の日付）
-    cursor.execute("""
-        SELECT id, store_name, total, COALESCE(receipt_date, DATE(created_at)) as receipt_date 
-        FROM receipts 
-        ORDER BY receipt_date DESC, id DESC 
-        LIMIT 20
-    """)
-    receipts = [
-        {"id": row[0], "store_name": row[1], "total": row[2], "receipt_date": row[3]}
-        for row in cursor.fetchall()
-    ]
-    conn.close()
+async def get_receipts(user=Depends(current_user)):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, store_name, total, receipt_date
+                FROM receipts
+                WHERE user_id = %s
+                ORDER BY receipt_date DESC NULLS LAST, id DESC
+                LIMIT 20
+                """,
+                (user["id"],),
+            )
+            receipts = cur.fetchall()
+
     return {"receipts": receipts}
 
+
+@app.get("/receipts/{receipt_id}")
+async def get_receipt(
+    receipt_id: int,
+    user=Depends(current_user),
+):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, store_name, total, receipt_date
+                FROM receipts
+                WHERE id = %s AND user_id = %s
+                """,
+                (receipt_id, user["id"]),
+            )
+            receipt = cur.fetchone()
+
+            if not receipt:
+                raise HTTPException(status_code=404, detail="レシートが見つかりません")
+
+            cur.execute(
+                """
+                SELECT id, name, price, category
+                FROM items
+                WHERE receipt_id = %s
+                ORDER BY id
+                """,
+                (receipt_id,),
+            )
+            receipt["items"] = cur.fetchall()
+
+    return receipt
+
+
+@app.put("/receipts/{receipt_id}")
+async def update_receipt(
+    receipt_id: int,
+    payload: ReceiptUpdate,
+    user=Depends(current_user),
+):
+    try:
+        date.fromisoformat(payload.receipt_date)
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail="購入日は YYYY-MM-DD 形式で入力してください",
+        )
+
+    if payload.total < 0:
+        raise HTTPException(status_code=400, detail="合計金額は0以上にしてください")
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE receipts
+                SET store_name = %s, total = %s, receipt_date = %s
+                WHERE id = %s AND user_id = %s
+                """,
+                (
+                    payload.store_name,
+                    payload.total,
+                    payload.receipt_date,
+                    receipt_id,
+                    user["id"],
+                ),
+            )
+
+            if cur.rowcount == 0:
+                raise HTTPException(status_code=404, detail="レシートが見つかりません")
+
+            cur.execute(
+                "DELETE FROM items WHERE receipt_id = %s",
+                (receipt_id,),
+            )
+
+            for item in payload.items:
+                cur.execute(
+                    """
+                    INSERT INTO items (receipt_id, name, price, category)
+                    VALUES (%s, %s, %s, %s)
+                    """,
+                    (
+                        receipt_id,
+                        item.name,
+                        item.price,
+                        item.category,
+                    ),
+                )
+
+        conn.commit()
+
+    return {"status": "success"}
+
+
 @app.delete("/receipts/{receipt_id}")
-async def delete_receipt(receipt_id: int):
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM receipts WHERE id = ?", (receipt_id,))
-    conn.commit()
-    conn.close()
+async def delete_receipt(
+    receipt_id: int,
+    user=Depends(current_user),
+):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                DELETE FROM receipts
+                WHERE id = %s AND user_id = %s
+                """,
+                (receipt_id, user["id"]),
+            )
+
+            if cur.rowcount == 0:
+                raise HTTPException(status_code=404, detail="レシートが見つかりません")
+
+        conn.commit()
+
     return {"status": "success"}
